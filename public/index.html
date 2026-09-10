@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boggart</title>
+<style>
+  :root { color-scheme: light dark; --bd: #d7dbe0; --mut: #6b7280; --ac: #0369a1; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--mut); font-size: 13px; margin: 0 0 20px; }
+  .panel { border: 1px solid var(--bd); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input, textarea, button { font: inherit; }
+  input[type=text], textarea { flex: 1 1 260px; min-width: 0; padding: 8px 10px; border: 1px solid var(--bd); border-radius: 8px; background: transparent; color: inherit; }
+  input[type=number] { width: 74px; padding: 8px; border: 1px solid var(--bd); border-radius: 8px; background: transparent; color: inherit; }
+  button { padding: 8px 14px; border: 1px solid var(--ac); background: var(--ac); color: #fff; border-radius: 8px; cursor: pointer; }
+  button.alt { background: transparent; color: var(--ac); }
+  button:disabled { opacity: .55; cursor: default; }
+  #log { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+  .msg { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--bd); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.me { border-color: var(--ac); }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--mut); margin-bottom: 3px; }
+  .meta { font-size: 12px; color: var(--mut); margin-top: 4px; }
+  .err { border-color: #b4392c; color: #b4392c; }
+  dl { display: grid; grid-template-columns: auto auto; gap: 2px 14px; margin: 0; font-size: 13px; }
+  dt { color: var(--mut); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--mut); margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Boggart</h1>
+  <p class="sub">A small Claude chat that spends tokens on purpose, so the platform's metering, budget caps and spend-anomaly detection can be exercised against real traffic.</p>
+
+  <div class="panel">
+    <h2>Chat</h2>
+    <div id="log"></div>
+    <form id="chat" class="row">
+      <input id="message" type="text" placeholder="Ask it something…" autocomplete="off" required>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Burst — the spend dial</h2>
+    <p class="sub" style="margin:0 0 10px">Fires N requests back to back. This is how you draw a spike: keep it quiet for a day or two, then burst, and the anomaly detector has something to find.</p>
+    <form id="burst" class="row">
+      <input id="count" type="number" min="1" max="50" value="10" aria-label="How many requests">
+      <input id="prompt" type="text" placeholder="Prompt (optional)" autocomplete="off">
+      <button type="submit" class="alt" id="go">Burst</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Spent this process</h2>
+    <dl>
+      <dt>Model</dt><dd id="s-model">—</dd>
+      <dt>Calls</dt><dd id="s-calls">0</dd>
+      <dt>Input tokens</dt><dd id="s-in">0</dd>
+      <dt>Output tokens</dt><dd id="s-out">0</dd>
+      <dt>Estimated</dt><dd id="s-usd">$0.000000</dd>
+      <dt>Errors</dt><dd id="s-err">0</dd>
+    </dl>
+    <p class="sub" style="margin:10px 0 0">This figure is Boggart's own arithmetic from the rates in <code>insygna.yaml</code>. The platform prices the same traffic itself from the traces — the two should agree, and a gap is worth a look.</p>
+  </div>
+</main>
+
+<script type="module">
+  const log = document.getElementById('log');
+  const history = [];
+
+  function bubble(who, text, cls = '') {
+    const el = document.createElement('div');
+    el.className = `msg ${cls}`;
+    const w = document.createElement('div');
+    w.className = 'who';
+    w.textContent = who;
+    const body = document.createElement('div');
+    body.textContent = text;
+    el.append(w, body);
+    log.append(el);
+    el.scrollIntoView({ block: 'nearest' });
+    return el;
+  }
+
+  function note(el, text) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    m.textContent = text;
+    el.append(m);
+  }
+
+  async function post(path, body) {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+    return data;
+  }
+
+  function paint(t, model) {
+    if (!t) return;
+    if (model) document.getElementById('s-model').textContent = model;
+    document.getElementById('s-calls').textContent = t.calls;
+    document.getElementById('s-in').textContent = t.inputTokens.toLocaleString('en-US');
+    document.getElementById('s-out').textContent = t.outputTokens.toLocaleString('en-US');
+    document.getElementById('s-err').textContent = t.errors ?? 0;
+  }
+
+  async function refresh() {
+    try {
+      const s = await fetch('/api/stats').then(r => r.json());
+      paint(s, s.model);
+      document.getElementById('s-usd').textContent = '$' + s.estimatedUsd.toFixed(6);
+    } catch { /* the panel is a convenience; a failed refresh is not worth an alarm */ }
+  }
+
+  document.getElementById('chat').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('message');
+    const send = document.getElementById('send');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    bubble('you', text, 'me');
+    send.disabled = true;
+    try {
+      const data = await post('/api/chat', { message: text, history });
+      const el = bubble('boggart', data.reply);
+      note(el, `${data.usage.inputTokens} in · ${data.usage.outputTokens} out · $${data.estimatedUsd.toFixed(6)}`);
+      history.push({ role: 'user', content: text }, { role: 'assistant', content: data.reply });
+      paint(data.totals);
+    } catch (err) {
+      bubble('error', err.message, 'err');
+    } finally {
+      send.disabled = false;
+      input.focus();
+      refresh();
+    }
+  });
+
+  document.getElementById('burst').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const go = document.getElementById('go');
+    const count = Number(document.getElementById('count').value) || 1;
+    const prompt = document.getElementById('prompt').value.trim();
+    go.disabled = true;
+    const el = bubble('burst', `Firing ${count} request(s)…`);
+    try {
+      const data = await post('/api/burst', { count, prompt: prompt || undefined });
+      el.querySelector('div:last-child').textContent =
+        `${data.calls} of ${data.requested} call(s) — ${data.inputTokens} in, ${data.outputTokens} out, $${data.estimatedUsd.toFixed(6)}`;
+      if (data.failure) note(el, `stopped: ${data.failure}`);
+      paint(data.totals);
+    } catch (err) {
+      el.className = 'msg err';
+      el.querySelector('div:last-child').textContent = err.message;
+    } finally {
+      go.disabled = false;
+      refresh();
+    }
+  });
+
+  refresh();
+</script>
+</body>
+</html>

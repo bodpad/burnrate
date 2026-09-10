@@ -1,0 +1,87 @@
+schema: "1.0"
+name: "Burnrate"
+description: |
+  A load fixture that spends tokens on demand so a spend curve can be produced rather than waited
+  for. It exposes a chat page for ordinary use and a burst endpoint that fires a chosen number of
+  requests back to back, giving a quiet baseline and then a deliberate spike. That is what the
+  platform's metering, per-agent budget cap and spend-anomaly detection need in order to be
+  exercised against real traffic instead of seeded rows. Outputs are plain chat replies plus the
+  token counts and estimated cost of every call it makes.
+category: "DevOps"
+license: "mit"
+
+pricing:
+  model: per_token
+  apis:
+    # url_pattern is matched against the `host` field on the proxied trace. Rates are USD per token
+    # and mirror Anthropic's list prices; keep them in step with the BOGGART_RATE_* defaults, or the
+    # figure this agent prints on its own page and the figure on the invoice disagree for no reason
+    # a reader could work out. cache_read is 0.1x list and cache_write 1.25x, per Anthropic's
+    # published cache multipliers.
+    - url_pattern: "api.anthropic.com"
+      type: per_token
+      model_field: model
+      input_token_field: inputTokens
+      output_token_field: outputTokens
+      rates:
+        claude-opus-5:    { input: 0.000005, output: 0.000025, cache_read: 0.0000005,  cache_write: 0.00000625 }
+        claude-opus-4-8:  { input: 0.000005, output: 0.000025, cache_read: 0.0000005,  cache_write: 0.00000625 }
+        claude-sonnet-5:  { input: 0.000002, output: 0.000010, cache_read: 0.0000002,  cache_write: 0.0000025 }
+        claude-haiku-4-5: { input: 0.000001, output: 0.000005, cache_read: 0.0000001,  cache_write: 0.00000125 }
+
+sla:
+  support:
+    response_hours: 4
+    coverage: business_hours
+    commitment: committed
+
+tags:
+  - "test-fixture"
+  - "chat"
+  - "metering"
+
+# Everything this agent is allowed to reach. An allowlist rather than allow_all deliberately: it is
+# the realistic shape, and this repository is also read as an example. The consequence is that a
+# missing entry here does not look like a policy refusal — the call simply fails, so if the chat
+# reports "could not reach Anthropic", check this list before anything else.
+network:
+  egress:
+    mode: allowlist
+    domains:
+      - "api.anthropic.com"
+    protocols:
+      https: true
+
+runtime:
+  # Declared beats detected. The Dockerfile's EXPOSE says the same thing; the two disagreeing is a
+  # routing failure that neither file reveals on its own.
+  app_port: 8080
+
+health:
+  readiness:
+    path: /health
+    port: 8080
+  liveness:
+    path: /health
+    port: 8080
+  startup_timeout: 60s
+
+env:
+  # Declared by NAME, never by value. This is what makes the platform inject it — and what makes the
+  # proxy redact it out of the traces it records.
+  required_secrets:
+    - ANTHROPIC_API_KEY
+  defaults:
+    BOGGART_MODEL: "claude-opus-5"
+    # Small on purpose: the fixture's job is many priced calls, not one long answer.
+    BOGGART_MAX_TOKENS: "1024"
+
+# Note the shape: cpu/memory each carry request and limit. It is not the Kubernetes
+# requests/limits nesting, and the schema refuses anything else.
+resources:
+  cpu:
+    request: "50m"
+    limit: "500m"
+  memory:
+    request: "128Mi"
+    limit: "256Mi"

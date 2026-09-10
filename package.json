@@ -1,0 +1,22 @@
+{
+  "name": "boggart",
+  "version": "1.0.0",
+  "description": "A deliberately small Claude chat agent, built to spend tokens on demand so the Insygna platform's metering, budget caps and spend-anomaly detection can be exercised against real traffic.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.0"
+  }
+}
